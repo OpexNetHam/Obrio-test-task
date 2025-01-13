@@ -1,0 +1,41 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: ./apps/api/Dockerfile
+      target: development
+    command: npm run start:dev api
+    env_file:
+      - './apps/api/.env'
+    ports:
+      - '3000:3000'
+    volumes:
+      - .:/usr/src/app
+  file-uploader:
+    build:
+      context: .
+      dockerfile: ./apps/file-uploader/Dockerfile
+      target: development
+    command: npm run start:dev file-uploader
+    env_file:
+      - './apps/file-uploader/.env'
+    ports:
+      - '3002:3002'
+    volumes:
+      - .:/usr/src/app
+  db:
+    image: postgres
+    restart: always
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=gd_app
+    container_name: postgres
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    ports:
+      - '5432:5432'
+  rabbitmq:
+    image: rabbitmq
+    ports:
+      - 5672:5672

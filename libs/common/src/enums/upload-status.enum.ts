@@ -1,0 +1,5 @@
+export enum UPLOAD_STATUS {
+    QUEUED = 'QUEUED',
+    FAILED = 'FAILED',
+    COMPLETED = 'COMPLETED'
+}
