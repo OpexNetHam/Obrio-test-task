@@ -27,10 +27,12 @@ export class FileUploaderService {
 
 
   public async initUpload(url: string, retryCount: number = 3) {
+    let isUploadComplete = false;
     try {
       const stream: Readable = await this.getFileStream(url);
       const metaData = await this.formUploadData(url);
       const destUrl = await this.fileStorageProvider.uploadFile(stream, metaData);
+      let isUploadComplete = true;
       await this.filesRepository.findOneAndUpdate({ originalUrl: url }, {
         status: UPLOAD_STATUS.COMPLETED,
         uploaded_at: new Date(),
@@ -38,16 +40,22 @@ export class FileUploaderService {
         name: metaData.fileName,
       });
     } catch (error) {
-      console.error(`Error during file upload: ${error.message}`);
-      
-      if (--retryCount > 0) {
-        console.log(`Retrying upload for ${url}. Remaining retries: ${retryCount}`);
-        this.rabbitMqClient.emit('upload_file', { url, retryCount });
+      if (!isUploadComplete) {
+        console.error(`Error during file upload: ${error.message}`);
+        
+        if (--retryCount > 0) {
+          console.log(`Retrying upload for ${url}. Remaining retries: ${retryCount}`);
+          this.rabbitMqClient.emit('upload_file', { url, retryCount });
+        } else {
+          await this.filesRepository.findOneAndUpdate({ originalUrl: url }, {
+            status: UPLOAD_STATUS.FAILED,
+          });
+        }
       } else {
-        await this.filesRepository.findOneAndUpdate({ originalUrl: url }, {
-          status: UPLOAD_STATUS.FAILED,
-        });
+        // TODO: handle DB error;
+        console.error(`Database update failed for ${url}.`);
       }
+
     }
   }
 
