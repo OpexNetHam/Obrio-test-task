@@ -31,8 +31,9 @@ For this test project, I decided to use NestJS with a microservices architecture
 
 ## TODO
 
-- **Implement Retry Mechanism:**  
-  Develop a mechanism to retry or resume failed uploads, ensuring that uploads can continue from the point of interruption.
+- **Implement Retry Mechanism(DONE):** 
+- **Improve Retry Mechanism:** 
+  Improve retry mechanism to ccontinue upload from the point where it was interrupted. Error already throws needed paylod to deside if we need to start over or continue upload
 
 - **Add Additional Microservices:**  
   Introduce Authentication and Notifications microservices to enhance security and provide user updates.
@@ -55,30 +56,6 @@ For this test project, I decided to use NestJS with a microservices architecture
 - **Integrate a Linter:**  
   Add a linter to maintain code quality and enforce coding standards across the project.
 
-
-## Brief thoughts about Retry Mechanism Implementation
-
-I'm considering using RabbitMQ to schedule a task for retrying file uploads. The basic idea is to create a task whose payload includes the following:
-
-- **originalFileUrl:** The URL of the file to be uploaded.
-- **retryCount:** An integer indicating how many retries remain (with a default value for the first retry task).
-- **Optional parameters:**
-  - **uploadSessionUrl:** If available, used to resume an interrupted upload session.
-  - **resumableStream:** Indicates whether the original URL's host supports the range header, which would allow us to start the stream from a specific offset.
-  - **totalBytes:** Contains the number of bytes that have already been successfully uploaded. This value is used to determine the correct starting point for a resumed upload.
-
-### How It Works
-
-1. **Payload Evaluation:**  
-   The consumer of the RabbitMQ task checks for the presence of `resumableStream` and `totalBytes` parameters:
-   - If both parameters are present, it will determine whether to resume the upload from `totalBytes + 1` (if the host supports range requests) or start over if the range header is not supported.
-   - If the parameters are not provided, it will start the upload from the beginning.
-
-2. **Handling Retries:**  
-   - In case an upload fails again, the service will emit another RabbitMQ task with the same payload, but with a decremented `retryCount`.
-   - The consumer checks if the `retryCount` is still positive:
-     - If yes, the retry task is executed.
-     - If not, the consumer will update the file record in the database to a `FAILED` status and will not emit further retry tasks.
 
 ### Instalation
 
