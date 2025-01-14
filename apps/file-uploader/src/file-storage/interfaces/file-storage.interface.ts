@@ -1,5 +1,6 @@
 import { Readable } from 'stream';
+import { FileMetaData } from '../types';
 
 export interface FileStorageProvider {
-    uploadFile(fileStream: Readable, fileName: string, mimeType: string, resumableStream?: boolean, fileSize?: number): Promise<string>;
+    uploadFile(fileStream: Readable, metaData: FileMetaData): Promise<string>;
 }
