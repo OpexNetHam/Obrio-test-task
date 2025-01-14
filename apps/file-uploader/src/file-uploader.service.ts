@@ -1,13 +1,13 @@
 import { Injectable, HttpException, HttpStatus, Inject } from '@nestjs/common';
 import { Readable } from 'stream';
 import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
-import { FileStorageProvider } from './file-storage/interfaces/file-storage.interface';
+import { FileStorageProvider, ResumableFileUploadResult } from './file-storage/interfaces/file-storage.interface';
 import { FilesRepository, UPLOAD_STATUS } from '@app/common';
 
 @Injectable()
 export class FileUploaderService {
   constructor(
-    @Inject('FileStorageProvider') private readonly fileStorageProvider: FileStorageProvider,
+    @Inject('FileStorageProvider') private readonly fileStorageProvider: FileStorageProvider<ResumableFileUploadResult>,
     private readonly filesRepository: FilesRepository,
   ){}
 
@@ -15,7 +15,7 @@ export class FileUploaderService {
   public async initUpload(url: string) {
     const resumable = await this.checkRangeSupport(url);
     const { stream, name, mimeType, fileSize } = await this.formUploadData(url);
-    const destUrl = await this.fileStorageProvider.uploadFile(stream, name, mimeType, resumable, fileSize);
+    const {destUrl, resumableUploadUrl} = await this.fileStorageProvider.uploadFile(stream, name, mimeType, resumable, fileSize);
     await this.filesRepository.findOneAndUpdate({originalUrl: url}, {
       status: UPLOAD_STATUS.COMPLETED,
       uploaded_at: new Date(),
@@ -75,7 +75,7 @@ export class FileUploaderService {
       const acceptRanges = response.headers['accept-ranges'];
       return acceptRanges === 'bytes';
     } catch (error) {
-      console.error(`Error checking Range support: ${error.message}`);
+      console.error(`Error checking Range support: ${error.message}, lalalalalla`);
       return false;
     }
   }
@@ -96,7 +96,6 @@ export class FileUploaderService {
     const mimeType = headResponse.headers['content-type'] || 'unknown';
     const contentDisposition = headResponse.headers['content-disposition'];
     let fileName = "Unknown";
-    let fileSize = undefined;
     if (contentDisposition) {
       const match = contentDisposition.match(/filename="?(.+?)"?$/);
       if (match) {
@@ -105,7 +104,14 @@ export class FileUploaderService {
     }
 
     const fileSizeHeader = headResponse.headers['content-length'];
-    if(fileSizeHeader) fileSize = parseInt(fileSizeHeader, 10);
+    if(!fileSizeHeader){
+      throw new HttpException(
+        `Error processing URL: Resumable upload not supported due to lack of content-length header`,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    } 
+    const fileSize = parseInt(fileSizeHeader, 10);
+
     return {
       mimeType,
       fileName,

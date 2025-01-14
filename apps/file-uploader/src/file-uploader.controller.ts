@@ -19,8 +19,6 @@ export class FileUploaderController {
     const response = { success: true, message: 'Message acknowledged' };
 
     this.fileUploaderService.initUpload(data.url);
-
-    console.log('before return')
     return response;
   }
 }

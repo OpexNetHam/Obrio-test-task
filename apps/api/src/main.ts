@@ -19,7 +19,6 @@ async function bootstrap() {
 
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('docs', app, document);
-  console.log(configService.get('PORT'))
   await app.listen(configService.get('PORT'), '0.0.0.0', () => {
     console.log('Nest application is listening on port 3000');
   });

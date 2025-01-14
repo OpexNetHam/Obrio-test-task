@@ -1,6 +1,6 @@
 import { DynamicModule, Module, Provider } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { FileStorageProvider } from './interfaces/file-storage.interface';
+import { FileStorageProvider, ResumableFileUploadResult } from './interfaces/file-storage.interface';
 import { GoogleDriveService } from '../google-drive/google-drive.service';
 
 
@@ -10,7 +10,7 @@ export class FileStorageModule {
     const providers: Provider[] = [
       {
         provide: 'FileStorageProvider',
-        useFactory: (configService: ConfigService): FileStorageProvider => {
+        useFactory: (configService: ConfigService): FileStorageProvider<ResumableFileUploadResult> => {
           if (provider === 'googleDrive') {
             return new GoogleDriveService(
               {
