@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { FileUploaderController } from './file-uploader.controller';
 import { FileUploaderService } from './file-uploader.service';
 import { DatabaseModule, FilesRepository, LoggerModule, File } from '@app/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { GoogleDriveModule } from './google-drive/google-drive.module';
 import { FileStorageModule } from './file-storage/file-storage.module';
 import * as Joi from 'joi';

@@ -3,11 +3,13 @@ import { Readable } from 'stream';
 import { google } from 'googleapis';
 import axios from 'axios';
 import { GoogleDriveConfig } from './types';
-import { FileStorageProvider, ResumableFileUploadResult } from '../file-storage/interfaces/file-storage.interface';
+import { FileStorageProvider } from '../file-storage/interfaces/file-storage.interface';
 import { GoogleAuth } from 'google-auth-library';
+import { FileMetaData } from '../file-storage/types';
+import { ErrorWithPayload } from '@app/common/errors/custom-error.util';
 
 @Injectable()
-export class GoogleDriveService implements FileStorageProvider<ResumableFileUploadResult> {
+export class GoogleDriveService implements FileStorageProvider {
   private folderId: string;
   private auth: GoogleAuth;
   private readonly CHUNK_SIZE = 256 * 1024;
@@ -25,88 +27,109 @@ export class GoogleDriveService implements FileStorageProvider<ResumableFileUplo
 
   public async uploadFile(
     fileStream: Readable,
-    fileName: string,
-    mimeType: string,
-    resumable: boolean = false,
-    fileSize: number,
-    totalBytes: number = 0,
-  ): Promise<ResumableFileUploadResult> {
+    metaData: FileMetaData
+  ): Promise<string> {
     console.log('Starting uploadFile to Google Drive in chunked mode');
+    let resumableUploadUrl: string | null = null;
+    let bytesUploaded: number | null = null;
 
-    if (resumable && (!fileSize || fileSize <= 0)) {
-      throw new Error('File size must be provided and > 0 for resumable uploads.');
-    }
-
-    try {
-      const accessToken = await this.getAuthToken();
-
-      const fileMetadata = {
-        name: fileName,
-        mimeType,
-        parents: [this.folderId],
-      };
-
-      const resumableUploadUrl = await this.initResumableUpload(accessToken, fileMetadata, fileSize);
-
-      const finalUploadResponse = await this.performChunkedUpload(fileStream, resumableUploadUrl, fileSize, mimeType);
-
-      const fileId = finalUploadResponse?.data?.id;
-      if (!fileId) {
-        throw new Error('Failed to retrieve file ID from the final upload response.');
+    return new Promise(async (resolve, reject) => {
+      try {
+        const {
+          fileName,
+          mimeType,
+          fileSize,
+        } = metaData;
+  
+        const accessToken = await this.getAuthToken();
+  
+        const fileMetadata = {
+          name: fileName,
+          mimeType,
+          parents: [this.folderId],
+        };
+  
+        resumableUploadUrl = await this.initResumableUpload(accessToken, fileMetadata, fileSize);
+  
+        fileStream.on('error', (error) => {
+          console.error('Stream error during upload:', error);
+          reject(new ErrorWithPayload(`Stream error: ${error.message}`, {
+            resumableUploadUrl,
+            bytesUploaded
+          }));
+        });
+  
+        const finalUploadResponse = await this.performChunkedUpload(fileStream, resumableUploadUrl, fileSize, mimeType);
+        const fileId = finalUploadResponse?.data?.id;
+        if (!fileId) {
+          throw new Error('Failed to retrieve file ID from the final upload response.');
+        }
+        console.log(`File successfully uploaded. File ID: ${fileId}`);
+  
+        resolve(`https://drive.google.com/uc?id=${fileId}&export=download`);
+      } catch (e: any) {
+        reject(new Error(`Error uploading file: ${e.message}`));
       }
-      console.log(`File successfully uploaded. File ID: ${fileId}`);
-
-      const destUrl = `https://drive.google.com/uc?id=${fileId}&export=download`;
-
-      return {
-        destUrl,
-        resumableUploadUrl,
-      };
-    } catch (e: any) {
-      throw new Error(`Error uploading file: ${e.message}`);
-    }
+    });
   }
 
   private async performChunkedUpload(
     fileStream: Readable,
     resumableUploadUrl: string,
     fileSize: number,
-    mimeType: string,
+    mimeType: string
   ) {
     let bytesUploaded = 0;
     let buffer = Buffer.alloc(0);
     let finalUploadResponse: any = null;
-
-    for await (const data of fileStream) {
-      buffer = Buffer.concat([buffer, data]);
-
-      while (buffer.length >= this.CHUNK_SIZE) {
-        const chunk = buffer.subarray(0, this.CHUNK_SIZE);
-        const start = bytesUploaded;
-        const end = bytesUploaded + chunk.length - 1;
-
-        const chunkResponse = await this.uploadChunk(resumableUploadUrl, chunk, start, end, fileSize, mimeType);
-
-        if (chunkResponse.data && chunkResponse.data.id) {
-          finalUploadResponse = chunkResponse;
+  
+    try {
+      for await (const data of fileStream) {
+        buffer = Buffer.concat([buffer, data]);
+  
+        while (buffer.length >= this.CHUNK_SIZE) {
+          const chunk = buffer.subarray(0, this.CHUNK_SIZE);
+          const start = bytesUploaded;
+          const end = bytesUploaded + chunk.length - 1;
+  
+          finalUploadResponse = await this.uploadChunk(
+            resumableUploadUrl,
+            buffer,
+            start,
+            end,
+            fileSize,
+            mimeType
+          );
+          bytesUploaded += chunk.length;
+          buffer = buffer.subarray(this.CHUNK_SIZE);
         }
-        bytesUploaded += chunk.length;
-        buffer = buffer.subarray(this.CHUNK_SIZE);
       }
+  
+      if (buffer.length > 0) {
+        const start = bytesUploaded;
+        const end = bytesUploaded + buffer.length - 1;
+        finalUploadResponse = await this.uploadChunk(
+          resumableUploadUrl,
+          buffer,
+          start,
+          end,
+          fileSize,
+          mimeType
+        );
+        bytesUploaded += buffer.length;
+      }
+  
+      if (bytesUploaded !== fileSize) {
+        throw new Error(`Uploaded bytes (${bytesUploaded}) do not match file size (${fileSize}).`);
+      }
+  
+      return finalUploadResponse;
+    } catch (error) {
+      throw new ErrorWithPayload(`Chunk upload interrupted: ${error.message}`, {
+        bytesUploaded,
+        resumableUploadUrl,
+      });
     }
-
-    if (buffer.length > 0) {
-      const start = bytesUploaded;
-      const end = bytesUploaded + buffer.length - 1;
-      finalUploadResponse = await this.uploadChunk(resumableUploadUrl, buffer, start, end, fileSize, mimeType);
-      bytesUploaded += buffer.length;
-    }
-
-    if (bytesUploaded !== fileSize) {
-      throw new Error(`Uploaded bytes (${bytesUploaded}) do not match file size (${fileSize}).`);
-    }
-
-    return finalUploadResponse;
   }
 
   private async uploadChunk(
@@ -149,7 +172,7 @@ export class GoogleDriveService implements FileStorageProvider<ResumableFileUplo
 
     const resumableUploadUrl = sessionInitResponse.headers.location;
     if (!resumableUploadUrl) {
-      throw new Error('Failed to obtain resumable session URL from Google Drive');
+      throw new ErrorWithPayload(`Failed to obtain resumable session URL from Google Drive`, {});
     }
     console.log(`Resumable session initiated. URL: ${resumableUploadUrl}`);
     return resumableUploadUrl;
@@ -158,7 +181,7 @@ export class GoogleDriveService implements FileStorageProvider<ResumableFileUplo
   private async getAuthToken() {
     const accessToken = await this.auth.getAccessToken();
     if (!accessToken) {
-      throw new Error('Failed to retrieve access token.');
+      throw new ErrorWithPayload(`Failed to obtain resumable session URL from Google Drive`, {});
     }
     return accessToken;
   }

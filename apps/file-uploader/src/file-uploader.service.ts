@@ -1,32 +1,59 @@
 import { Injectable, HttpException, HttpStatus, Inject } from '@nestjs/common';
 import { Readable } from 'stream';
 import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
-import { FileStorageProvider, ResumableFileUploadResult } from './file-storage/interfaces/file-storage.interface';
+import { FileStorageProvider } from './file-storage/interfaces/file-storage.interface';
 import { FilesRepository, UPLOAD_STATUS } from '@app/common';
+import { FileMetaData } from './file-storage/types';
+import { ClientProxy, ClientProxyFactory, Transport } from '@nestjs/microservices';
+import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class FileUploaderService {
+  private rabbitMqClient: ClientProxy;
   constructor(
-    @Inject('FileStorageProvider') private readonly fileStorageProvider: FileStorageProvider<ResumableFileUploadResult>,
+    private readonly configService: ConfigService,
+    @Inject('FileStorageProvider') private readonly fileStorageProvider: FileStorageProvider,
     private readonly filesRepository: FilesRepository,
-  ){}
-
-
-  public async initUpload(url: string) {
-    const resumable = await this.checkRangeSupport(url);
-    const { stream, name, mimeType, fileSize } = await this.formUploadData(url);
-    const {destUrl, resumableUploadUrl} = await this.fileStorageProvider.uploadFile(stream, name, mimeType, resumable, fileSize);
-    await this.filesRepository.findOneAndUpdate({originalUrl: url}, {
-      status: UPLOAD_STATUS.COMPLETED,
-      uploaded_at: new Date(),
-      destUrl,
-      name,
+  ){
+    this.rabbitMqClient = ClientProxyFactory.create({
+      transport: Transport.RMQ,
+      options: {
+        urls: [this.configService.get<string>('RABBITMQ_URI')],
+        queue: 'uploader',
+        queueOptions: { durable: true },
+      },
     });
+  }
+
+
+  public async initUpload(url: string, retryCount: number = 3) {
+    try {
+      const stream: Readable = await this.getFileStream(url);
+      const metaData = await this.formUploadData(url);
+      const destUrl = await this.fileStorageProvider.uploadFile(stream, metaData);
+      await this.filesRepository.findOneAndUpdate({ originalUrl: url }, {
+        status: UPLOAD_STATUS.COMPLETED,
+        uploaded_at: new Date(),
+        destUrl,
+        name: metaData.fileName,
+      });
+    } catch (error) {
+      console.error(`Error during file upload: ${error.message}`);
+      
+      if (--retryCount > 0) {
+        console.log(`Retrying upload for ${url}. Remaining retries: ${retryCount}`);
+        this.rabbitMqClient.emit('upload_file', { url, retryCount });
+      } else {
+        await this.filesRepository.findOneAndUpdate({ originalUrl: url }, {
+          status: UPLOAD_STATUS.FAILED,
+        });
+      }
+    }
   }
 
   private async formUploadData(
     url: string,
-  ): Promise<{ name: string; mimeType: string; stream: Readable, resumableStream: boolean, fileSize: number }> {
+  ): Promise<FileMetaData> {
     try {
       const headResponse: AxiosResponse = await axios.head(url);
 
@@ -47,14 +74,11 @@ export class FileUploaderService {
         fileSize,
       } = this.parseHeaders(headResponse);
 
-      const getResponse: AxiosResponse = await this.getFileStream(url);
-
       return {
-        name: fileName,
+        fileName,
         mimeType,
-        stream: getResponse.data as Readable,
         resumableStream,
-        fileSize,
+        fileSize
       };
     } catch (error) {
       throw new HttpException(
@@ -80,17 +104,22 @@ export class FileUploaderService {
     }
   }
 
-  private async getFileStream(url: string, bytes?: number) {
+  private async getFileStream(url: string, bytes?: number): Promise<Readable> {
     const options: AxiosRequestConfig = {
-      responseType: 'stream'
+        responseType: 'stream',
+    };
+
+    if (bytes !== undefined) {
+        options.headers = {
+            Range: `bytes=${bytes}-`,
+        };
     }
-    if(bytes !== undefined) {
-      options.headers = {
-        Range: 'bytes=500-'
-      }
-    }
-    return axios.get(url, options);
-  }
+
+    const response = await axios.get(url, options);
+    const stream = response.data as Readable;
+
+    return stream;
+}
 
   private parseHeaders(headResponse: AxiosResponse) {
     const mimeType = headResponse.headers['content-type'] || 'unknown';

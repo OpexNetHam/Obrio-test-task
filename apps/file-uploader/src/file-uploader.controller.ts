@@ -10,7 +10,7 @@ export class FileUploaderController {
 
   @MessagePattern('upload_file')
   async uploadFiles(
-    @Payload() data: { url: string },
+    @Payload() data: { url: string, retryCount?: number },
     @Ctx() context: RmqContext,
   ) {
     const channel = context.getChannelRef();
@@ -18,7 +18,7 @@ export class FileUploaderController {
     channel.ack(originalMsg);
     const response = { success: true, message: 'Message acknowledged' };
 
-    this.fileUploaderService.initUpload(data.url);
+    this.fileUploaderService.initUpload(data.url, data.retryCount ? data.retryCount : 3);
     return response;
   }
 }
