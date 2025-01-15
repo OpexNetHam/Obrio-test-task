@@ -26,13 +26,22 @@ export class FileUploaderService {
   }
 
 
-  public async initUpload(url: string, retryCount: number = 3) {
+  public async initUpload(url: string, retryCount: number = 2, resumeUploadUrl?: string) {
     let isUploadComplete = false;
     try {
-      const stream: Readable = await this.getFileStream(url);
+      let isResumable = false;
+      let bytesUploaded = 0;
+
       const metaData = await this.formUploadData(url);
-      const destUrl = await this.fileStorageProvider.uploadFile(stream, metaData);
-      let isUploadComplete = true;
+
+      if(resumeUploadUrl) {
+        bytesUploaded = await this.getUploadedBytes(resumeUploadUrl, metaData.fileSize);
+        isResumable = await this.checkRangeSupport(url);
+      }
+      
+      const stream: Readable = await this.getFileStream(url, bytesUploaded);
+      const destUrl = await this.fileStorageProvider.uploadFile(stream, metaData, isResumable ? {resumeUploadUrl, bytesUploaded} : null);
+      isUploadComplete = true;
       await this.filesRepository.findOneAndUpdate({ originalUrl: url }, {
         status: UPLOAD_STATUS.COMPLETED,
         uploaded_at: new Date(),
@@ -40,12 +49,14 @@ export class FileUploaderService {
         name: metaData.fileName,
       });
     } catch (error) {
+      console.error(`Error during file upload: ${error.message}`);
       if (!isUploadComplete) {
-        console.error(`Error during file upload: ${error.message}`);
-        
+        const {
+          resumeUploadUrl,
+        } = error?.payload
         if (--retryCount > 0) {
-          console.log(`Retrying upload for ${url}. Remaining retries: ${retryCount}`);
-          this.rabbitMqClient.emit('upload_file', { url, retryCount });
+          this.rabbitMqClient.emit('upload_file', { url, retryCount, resumeUploadUrl });
+          console.log(`Retrying upload for ${url}. Remaining retries: ${retryCount}, resumeUploadUrl ${resumeUploadUrl}`);
         } else {
           await this.filesRepository.findOneAndUpdate({ originalUrl: url }, {
             status: UPLOAD_STATUS.FAILED,
@@ -75,7 +86,6 @@ export class FileUploaderService {
         );
       }
 
-      const resumableStream = await this.checkRangeSupport(url);
       const {
         fileName,
         mimeType,
@@ -85,7 +95,6 @@ export class FileUploaderService {
       return {
         fileName,
         mimeType,
-        resumableStream,
         fileSize
       };
     } catch (error) {
@@ -112,14 +121,14 @@ export class FileUploaderService {
     }
   }
 
-  private async getFileStream(url: string, bytes?: number): Promise<Readable> {
+  private async getFileStream(url: string, bytesUploaded?: number): Promise<Readable> {
     const options: AxiosRequestConfig = {
         responseType: 'stream',
     };
 
-    if (bytes !== undefined) {
+    if (bytesUploaded !== undefined) {
         options.headers = {
-            Range: `bytes=${bytes}-`,
+            Range: `bytes=${bytesUploaded}-`,
         };
     }
 
@@ -153,6 +162,40 @@ export class FileUploaderService {
       mimeType,
       fileName,
       fileSize,
+    }
+  }
+
+  private async getUploadedBytes(resumeUploadUrl: string, fileSize: number): Promise<number> {
+    try {
+      const response = await axios.put(resumeUploadUrl, null, {
+        headers: {
+          'Content-Range': `bytes */${fileSize}`,
+        },
+        validateStatus: (status) => status === 200 || status === 201 || status === 308, // Acceptable statuses
+      });
+  
+      // Handle 200 or 201 (Upload complete)
+      if (response.status === 200 || response.status === 201) {
+        console.log('Upload is already complete.');
+        return fileSize; // Entire file has been uploaded
+      }
+  
+      // Handle 308 (Resume incomplete)
+      if (response.status === 308) {
+        const rangeHeader = response.headers['range'];
+        if (rangeHeader) {
+          const match = rangeHeader.match(/bytes=(\d+)-(\d+)/);
+          if (match) {
+            return parseInt(match[2], 10) + 1; // Return the next byte position
+          }
+        }
+        return 0; // No bytes have been uploaded yet
+      }
+  
+      throw new Error('Unexpected response status.');
+    } catch (error: any) {
+      console.error('Error querying upload session:', error.response?.data || error.message);
+      throw new Error('Failed to query upload session.');
     }
   }
 }

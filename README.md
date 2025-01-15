@@ -32,8 +32,7 @@ For this test project, I decided to use NestJS with a microservices architecture
 ## TODO
 
 - **Implement Retry Mechanism(DONE):** 
-- **Improve Retry Mechanism:** 
-  Improve retry mechanism to ccontinue upload from the point where it was interrupted. Error already throws needed paylod to deside if we need to start over or continue upload
+- **Improve Retry Mechanism:(DONE)** 
 
 - **Add Additional Microservices:**  
   Introduce Authentication and Notifications microservices to enhance security and provide user updates.
