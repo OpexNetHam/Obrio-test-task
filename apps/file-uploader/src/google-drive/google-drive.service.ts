@@ -5,7 +5,7 @@ import axios from 'axios';
 import { GoogleDriveConfig } from './types';
 import { FileStorageProvider } from '../file-storage/interfaces/file-storage.interface';
 import { GoogleAuth } from 'google-auth-library';
-import { FileMetaData } from '../file-storage/types';
+import { FileMetaData, ResumeUploadData } from '../file-storage/types';
 import { ErrorWithPayload } from '@app/common/errors/custom-error.util';
 
 @Injectable()
@@ -27,12 +27,10 @@ export class GoogleDriveService implements FileStorageProvider {
 
   public async uploadFile(
     fileStream: Readable,
-    metaData: FileMetaData
+    metaData: FileMetaData,
+    resumableUploadData?: ResumeUploadData,
   ): Promise<string> {
     console.log('Starting uploadFile to Google Drive in chunked mode');
-    let resumableUploadUrl: string | null = null;
-    let bytesUploaded: number | null = null;
-
     return new Promise(async (resolve, reject) => {
       try {
         const {
@@ -40,6 +38,11 @@ export class GoogleDriveService implements FileStorageProvider {
           mimeType,
           fileSize,
         } = metaData;
+
+        let {
+          resumeUploadUrl = null,
+          bytesUploaded = 0
+        } = resumableUploadData ? resumableUploadData : {}
   
         const accessToken = await this.getAuthToken();
   
@@ -48,18 +51,19 @@ export class GoogleDriveService implements FileStorageProvider {
           mimeType,
           parents: [this.folderId],
         };
-  
-        resumableUploadUrl = await this.initResumableUpload(accessToken, fileMetadata, fileSize);
+
+        if(!resumeUploadUrl) {
+          resumeUploadUrl = await this.initResumableUpload(accessToken, fileMetadata, fileSize);
+        }
   
         fileStream.on('error', (error) => {
           console.error('Stream error during upload:', error);
           reject(new ErrorWithPayload(`Stream error: ${error.message}`, {
-            resumableUploadUrl,
-            bytesUploaded
+            resumeUploadUrl,
           }));
         });
   
-        const finalUploadResponse = await this.performChunkedUpload(fileStream, resumableUploadUrl, fileSize, mimeType);
+        const finalUploadResponse = await this.performChunkedUpload(fileStream, resumeUploadUrl, fileSize, mimeType, bytesUploaded);
         const fileId = finalUploadResponse?.data?.id;
         if (!fileId) {
           throw new Error('Failed to retrieve file ID from the final upload response.');
@@ -68,21 +72,20 @@ export class GoogleDriveService implements FileStorageProvider {
   
         resolve(`https://drive.google.com/uc?id=${fileId}&export=download`);
       } catch (e: any) {
-        reject(new Error(`Error uploading file: ${e.message}`));
+        reject(e);
       }
     });
   }
 
   private async performChunkedUpload(
     fileStream: Readable,
-    resumableUploadUrl: string,
+    resumeUploadUrl: string,
     fileSize: number,
-    mimeType: string
+    mimeType: string,
+    bytesUploaded: number = 0
   ) {
-    let bytesUploaded = 0;
     let buffer = Buffer.alloc(0);
     let finalUploadResponse: any = null;
-  
     try {
       for await (const data of fileStream) {
         buffer = Buffer.concat([buffer, data]);
@@ -93,8 +96,8 @@ export class GoogleDriveService implements FileStorageProvider {
           const end = bytesUploaded + chunk.length - 1;
   
           finalUploadResponse = await this.uploadChunk(
-            resumableUploadUrl,
-            buffer,
+            resumeUploadUrl,
+            chunk,
             start,
             end,
             fileSize,
@@ -109,7 +112,7 @@ export class GoogleDriveService implements FileStorageProvider {
         const start = bytesUploaded;
         const end = bytesUploaded + buffer.length - 1;
         finalUploadResponse = await this.uploadChunk(
-          resumableUploadUrl,
+          resumeUploadUrl,
           buffer,
           start,
           end,
@@ -126,14 +129,13 @@ export class GoogleDriveService implements FileStorageProvider {
       return finalUploadResponse;
     } catch (error) {
       throw new ErrorWithPayload(`Chunk upload interrupted: ${error.message}`, {
-        bytesUploaded,
-        resumableUploadUrl,
+        resumeUploadUrl,
       });
     }
   }
 
   private async uploadChunk(
-    resumableUploadUrl: string,
+    resumeUploadUrl: string,
     chunk: Buffer,
     start: number,
     end: number,
@@ -142,14 +144,14 @@ export class GoogleDriveService implements FileStorageProvider {
   ) {
     console.log(`Uploading chunk: bytes ${start}-${end}`);
 
-    return await axios.put(resumableUploadUrl, chunk, {
+    return await axios.put(resumeUploadUrl, chunk, {
       headers: {
         'Content-Length': chunk.length.toString(),
         'Content-Type': mimeType,
         'Content-Range': `bytes ${start}-${end}/${total}`,
       },
       onUploadProgress: (evt) => {
-        console.log(`Chunk progress: ${evt.loaded}/${evt.total} bytes`);
+        // console.log(`Chunk progress: ${evt.loaded}/${evt.total} bytes`);
       },
       validateStatus: (status) => status >= 200 && status < 300 || status === 308,
     });
@@ -170,12 +172,12 @@ export class GoogleDriveService implements FileStorageProvider {
       },
     );
 
-    const resumableUploadUrl = sessionInitResponse.headers.location;
-    if (!resumableUploadUrl) {
+    const resumeUploadUrl = sessionInitResponse.headers.location;
+    if (!resumeUploadUrl) {
       throw new ErrorWithPayload(`Failed to obtain resumable session URL from Google Drive`, {});
     }
-    console.log(`Resumable session initiated. URL: ${resumableUploadUrl}`);
-    return resumableUploadUrl;
+    console.log(`Resumable session initiated. URL: ${resumeUploadUrl}`);
+    return resumeUploadUrl;
   }
 
   private async getAuthToken() {
@@ -185,4 +187,5 @@ export class GoogleDriveService implements FileStorageProvider {
     }
     return accessToken;
   }
+  
 }

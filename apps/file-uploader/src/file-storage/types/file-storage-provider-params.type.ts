@@ -2,13 +2,17 @@ import { Readable } from "typeorm/platform/PlatformTools"
 
 export type FileStorageUploadParams = {
     fileStream: Readable,
-    fileMetaData: FileMetaData
+    fileMetaData: FileMetaData,
+    resumeUploadData: ResumeUploadData
 }
 
 export type FileMetaData = {
     fileName: string,
     mimeType: string, 
-    resumableStream?: boolean,
     fileSize?: number,
+} 
+
+export type ResumeUploadData = {
+    resumeUploadUrl: string
     bytesUploaded?: number
 }
